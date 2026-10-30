@@ -89,7 +89,7 @@ brew update
 brew install openssl@3 ansible git
 ```
 
-Publishing through the GitLab web interface and Git does not require a separate GitLab CLI.
+Publishing through the GitHub web interface and Git does not require the GitHub CLI (`gh`).
 
 Check the installed tools:
 
@@ -112,10 +112,10 @@ Build and export operations can be adapted to other systems with Ansible and Ope
 
 ### 3. Obtain the sources and edit domains
 
-After the repository has been published, replace `REPOSITORY_URL` below with its HTTPS clone URL from GitLab:
+Clone the repository and open the domain list:
 
 ```bash
-git clone REPOSITORY_URL restricted-russian-ca
+git clone https://github.com/iiigreen/restricted-russian-ca.git restricted-russian-ca
 cd restricted-russian-ca
 nano domains.txt
 ```
@@ -190,7 +190,7 @@ Restart the browser and test both allowed and disallowed sites. A successful ins
 
 ### 5. Change domains or remove the macOS certificates
 
-**Remove the installed version before `build-ca.yml` overwrites the files used to identify it.** Removal targets fingerprints from the current `generated/`; it does not automatically clean up all previous roots.
+**Remove the installed certificates (`ansible-playbook -K remove-keychain.yml`) before running `build-ca.yml` again.** Removal targets fingerprints from the current `generated/`; it does not automatically clean up all previous roots.
 
 ```bash
 ansible-playbook -K remove-keychain.yml
@@ -256,7 +256,7 @@ The private key and original self-signed Russian root are not included. Transfer
 
 ### 7. Install and remove on Windows
 
-Extract all six files into one directory, for example `C:\RuCert`. Open **Command Prompt as Administrator**:
+Extract all six files from `Restricted-Russian-CA-Windows.zip` into one directory, for example `C:\RuCert`. Open **Command Prompt as Administrator**:
 
 ```cmd
 cd /d C:\RuCert
@@ -368,7 +368,7 @@ brew update
 brew install openssl@3 ansible git
 ```
 
-Для публикации через веб-интерфейс GitLab и Git отдельная CLI-программа GitLab не требуется.
+Для публикации через веб-интерфейс GitHub и Git отдельная программа GitHub CLI (`gh`) не требуется.
 
 Проверьте установленные инструменты:
 
@@ -391,10 +391,10 @@ ansible-playbook build-ca.yml \
 
 ### 3. Получение исходников и список доменов
 
-После публикации репозитория замените `REPOSITORY_URL` ниже его HTTPS-адресом клонирования из GitLab:
+Клонируйте репозиторий и откройте список доменов:
 
 ```bash
-git clone REPOSITORY_URL restricted-russian-ca
+git clone https://github.com/iiigreen/restricted-russian-ca.git restricted-russian-ca
 cd restricted-russian-ca
 nano domains.txt
 ```
@@ -469,7 +469,7 @@ ansible-playbook -K install-keychain.yml
 
 ### 5. Изменение доменов и удаление на Mac
 
-**Удаляйте установленную версию до того, как `build-ca.yml` перезапишет файлы для её идентификации.** Удаление привязано к отпечаткам текущего `generated/`; это не автоматическая очистка всех прежних версий корня.
+**Удаляйте установленную версию сертификатов (`ansible-playbook -K remove-keychain.yml`) до нового запуска `build-ca.yml`.** Удаление привязано к отпечаткам текущего `generated/`; это не автоматическая очистка всех прежних версий корня.
 
 ```bash
 ansible-playbook -K remove-keychain.yml
@@ -535,7 +535,7 @@ Restricted-Russian-CA-Windows.zip
 
 ### 7. Установка и удаление на Windows
 
-Полностью распакуйте все шесть файлов в один каталог, например `C:\RuCert`. Откройте **CMD от имени администратора**:
+Полностью распакуйте все шесть файлов из архива `Restricted-Russian-CA-Windows.zip` в один каталог, например `C:\RuCert`. Откройте **CMD от имени администратора**:
 
 ```cmd
 cd /d C:\RuCert
