@@ -1,0 +1,49 @@
+# Local build directories.
+/generated/
+/windows/
+/.windows-zip.*/
+
+# Private keys, containers and generated certificate material.
+*.key
+*.p12
+*.pfx
+*.csr
+*.srl
+*.pem
+*.crt
+*.cer
+
+# Only these three public input certificates belong in the sources.
+!/Russian_Trusted_Root_CA.cer
+!/Russian_Trusted_Sub_CA.cer
+!/Russian_Trusted_Sub_CA_2024.cer
+
+# Backups, diagnostics and local secrets.
+/backup*/
+/.restricted-russian-ca-backups/
+/tls-diagnostics*/
+*.log
+*.retry
+.env
+.env.*
+
+# Archives are excluded by default.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Explicitly allow the reviewed Windows example at repository root.
+# Never include private keys in this archive.
+!/Restricted-Russian-CA-Windows.zip
+
+# Obsolete deletion scripts.
+/Remove-Russian-CA-All*.cmd
+
+# macOS and editor files.
+.DS_Store
+._*
+*.tmp
+*.swp
+*.swo
+*~

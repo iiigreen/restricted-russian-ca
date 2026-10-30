@@ -1,0 +1,324 @@
+---
+- name: Build restricted Russian CA chain
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    openssl_bin: /opt/homebrew/opt/openssl@3/bin/openssl
+    generated_dir: "{{ playbook_dir }}/generated"
+    domains_file: "{{ playbook_dir }}/domains.txt"
+
+    root_ca_source: "{{ playbook_dir }}/Russian_Trusted_Root_CA.cer"
+    sub_ca_source: "{{ playbook_dir }}/Russian_Trusted_Sub_CA.cer"
+    sub_ca_2024_source: "{{ playbook_dir }}/Russian_Trusted_Sub_CA_2024.cer"
+
+  tasks:
+    - name: Check required inputs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ openssl_bin }}"
+        - "{{ domains_file }}"
+        - "{{ root_ca_source }}"
+        - "{{ sub_ca_source }}"
+        - "{{ sub_ca_2024_source }}"
+      register: required
+
+    - name: Require all inputs
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Missing required input: {{ item.item }}"
+      loop: "{{ required.results }}"
+
+    - name: Create generated directory
+      ansible.builtin.file:
+        path: "{{ generated_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Read permitted DNS constraints
+      ansible.builtin.set_fact:
+        permitted_domains: >-
+          {{
+            lookup('ansible.builtin.file', domains_file).splitlines()
+            | map('trim')
+            | reject('equalto', '')
+            | reject('match', '^#')
+            | list
+          }}
+
+    - name: Require at least one DNS constraint
+      ansible.builtin.assert:
+        that:
+          - permitted_domains | length > 0
+        fail_msg: "domains.txt contains no DNS constraints"
+
+    - name: Generate root-ca.conf
+      ansible.builtin.copy:
+        dest: "{{ generated_dir }}/root-ca.conf"
+        mode: "0600"
+        content: |
+          [req]
+          distinguished_name = dn
+          x509_extensions = v3_ca
+          prompt = no
+
+          [dn]
+          CN = Restricted Russian CA
+
+          [v3_ca]
+          basicConstraints = critical, CA:true, pathlen:5
+          keyUsage = critical, digitalSignature, keyCertSign, cRLSign
+          subjectKeyIdentifier = hash
+          nameConstraints = critical, @constraints
+
+          [constraints]
+          {% for domain in permitted_domains %}
+          permitted;DNS.{{ loop.index }} = {{ domain }}
+          {% endfor %}
+      register: root_conf
+
+    - name: Generate persistent private CA key once
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - genpkey
+          - -algorithm
+          - RSA
+          - -pkeyopt
+          - rsa_keygen_bits:4096
+          - -out
+          - "{{ generated_dir }}/ca.key"
+      args:
+        creates: "{{ generated_dir }}/ca.key"
+
+    - name: Protect CA private key
+      ansible.builtin.file:
+        path: "{{ generated_dir }}/ca.key"
+        mode: "0600"
+
+    - name: Check existing restricted root
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/ca.crt"
+      register: ca_crt_stat
+
+    - name: Issue or reissue restricted root when constraints changed
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - req
+          - -x509
+          - -new
+          - -key
+          - "{{ generated_dir }}/ca.key"
+          - -days
+          - "3650"
+          - -sha256
+          - -out
+          - "{{ generated_dir }}/ca.crt"
+          - -config
+          - "{{ generated_dir }}/root-ca.conf"
+      when:
+        - root_conf.changed or not ca_crt_stat.stat.exists
+      register: ca_reissued
+
+    - name: Check normalized official root
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/Russian_Trusted_Root_CA.pem"
+      register: normalized_root
+
+    - name: Normalize official Russian root to PEM
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - x509
+          - -in
+          - "{{ root_ca_source }}"
+          - -out
+          - "{{ generated_dir }}/Russian_Trusted_Root_CA.pem"
+          - -outform
+          - PEM
+      when: not normalized_root.stat.exists
+
+    - name: Check normalized old Sub CA
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/Russian_Trusted_Sub_CA.pem"
+      register: normalized_sub
+
+    - name: Normalize old Russian Sub CA to PEM
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - x509
+          - -in
+          - "{{ sub_ca_source }}"
+          - -out
+          - "{{ generated_dir }}/Russian_Trusted_Sub_CA.pem"
+          - -outform
+          - PEM
+      when: not normalized_sub.stat.exists
+
+    - name: Check normalized Sub CA 2024
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+      register: normalized_sub_2024
+
+    - name: Normalize Russian Sub CA 2024 to PEM
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - x509
+          - -in
+          - "{{ sub_ca_2024_source }}"
+          - -out
+          - "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+          - -outform
+          - PEM
+      when: not normalized_sub_2024.stat.exists
+
+    - name: Check extracted Russian root public key
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/digital-gov.pub"
+      register: public_key_stat
+
+    - name: Extract official Russian root public key
+      ansible.builtin.shell: |
+        "{{ openssl_bin }}" x509 \
+          -in "{{ generated_dir }}/Russian_Trusted_Root_CA.pem" \
+          -pubkey \
+          -noout > "{{ generated_dir }}/digital-gov.pub"
+      args:
+        executable: /bin/bash
+      when: not public_key_stat.stat.exists
+
+    - name: Generate cross-sign extension config
+      ansible.builtin.copy:
+        dest: "{{ generated_dir }}/cross.conf"
+        mode: "0600"
+        content: |
+          [ cross_ca_ext ]
+          subjectKeyIdentifier = hash
+          authorityKeyIdentifier = keyid:always,issuer
+          basicConstraints = critical, CA:true
+          keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+      register: cross_conf
+
+    - name: Check existing cross-signed Russian root
+      ansible.builtin.stat:
+        path: "{{ generated_dir }}/new_root_ca.crt"
+      register: cross_root_stat
+
+    - name: Determine whether cross-signed root must be issued
+      ansible.builtin.set_fact:
+        rebuild_cross_root: >-
+          {{
+            (ca_reissued is defined and ca_reissued.changed | default(false))
+            or cross_conf.changed
+            or not cross_root_stat.stat.exists
+          }}
+
+    - name: Build cross-signed Russian root
+      when: rebuild_cross_root
+      block:
+        - name: Generate temporary CSR key
+          ansible.builtin.command:
+            argv:
+              - "{{ openssl_bin }}"
+              - genpkey
+              - -algorithm
+              - RSA
+              - -pkeyopt
+              - rsa_keygen_bits:4096
+              - -out
+              - "{{ generated_dir }}/temp.key"
+
+        - name: Generate temporary CSR
+          ansible.builtin.command:
+            argv:
+              - "{{ openssl_bin }}"
+              - req
+              - -new
+              - -key
+              - "{{ generated_dir }}/temp.key"
+              - -out
+              - "{{ generated_dir }}/dummy.csr"
+              - -subj
+              - /CN=Temporary Dummy CSR
+
+        - name: Issue cross-signed Russian Trusted Root CA
+          ansible.builtin.command:
+            argv:
+              - "{{ openssl_bin }}"
+              - x509
+              - -req
+              - -in
+              - "{{ generated_dir }}/dummy.csr"
+              - -CA
+              - "{{ generated_dir }}/ca.crt"
+              - -CAkey
+              - "{{ generated_dir }}/ca.key"
+              - -CAcreateserial
+              - -days
+              - "3650"
+              - -sha256
+              - -force_pubkey
+              - "{{ generated_dir }}/digital-gov.pub"
+              - -out
+              - "{{ generated_dir }}/new_root_ca.crt"
+              - -extfile
+              - "{{ generated_dir }}/cross.conf"
+              - -extensions
+              - cross_ca_ext
+              - -subj
+              - /C=RU/O=The Ministry of Digital Development and Communications/CN=Russian Trusted Root CA
+
+      always:
+        - name: Remove temporary CSR private key
+          ansible.builtin.file:
+            path: "{{ generated_dir }}/temp.key"
+            state: absent
+          changed_when: false
+
+        - name: Remove temporary CSR
+          ansible.builtin.file:
+            path: "{{ generated_dir }}/dummy.csr"
+            state: absent
+          changed_when: false
+
+    - name: Generate intermediates bundle
+      ansible.builtin.copy:
+        dest: "{{ generated_dir }}/intermediates.pem"
+        mode: "0600"
+        content: |
+          {{ lookup('ansible.builtin.file', generated_dir + '/Russian_Trusted_Sub_CA_2024.pem') }}
+          {{ lookup('ansible.builtin.file', generated_dir + '/Russian_Trusted_Sub_CA.pem') }}
+          {{ lookup('ansible.builtin.file', generated_dir + '/new_root_ca.crt') }}
+
+    - name: Verify Sub CA 2024 through restricted root
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - verify
+          - -CAfile
+          - "{{ generated_dir }}/ca.crt"
+          - -untrusted
+          - "{{ generated_dir }}/new_root_ca.crt"
+          - "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+      changed_when: false
+
+    - name: Show generated nameConstraints
+      ansible.builtin.shell: |
+        "{{ openssl_bin }}" x509 \
+          -in "{{ generated_dir }}/ca.crt" \
+          -noout -text |
+        grep -A20 "Name Constraints"
+      args:
+        executable: /bin/bash
+      register: constraints_output
+      changed_when: false
+
+    - name: Display generated nameConstraints
+      ansible.builtin.debug:
+        var: constraints_output.stdout_lines

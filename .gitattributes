@@ -1,0 +1,15 @@
+* text=auto
+
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+*.sh text eol=lf
+
+*.cmd text eol=crlf
+
+*.cer binary
+*.zip binary

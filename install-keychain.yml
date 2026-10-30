@@ -1,0 +1,78 @@
+---
+- name: Install restricted Russian CA into macOS System Keychain
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  vars:
+    openssl_bin: /opt/homebrew/opt/openssl@3/bin/openssl
+    generated_dir: "{{ playbook_dir }}/generated"
+    keychain: /Library/Keychains/System.keychain
+    ca_cert: "{{ generated_dir }}/ca.crt"
+    intermediates:
+      - "{{ generated_dir }}/new_root_ca.crt"
+      - "{{ generated_dir }}/Russian_Trusted_Sub_CA.pem"
+      - "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+  tasks:
+    - name: Ensure this is macOS
+      ansible.builtin.assert:
+        that: ansible_facts.system == "Darwin"
+    - name: Check certificate files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ [ca_cert] + intermediates }}"
+      register: cert_files
+    - name: Require generated certificates
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Missing {{ item.item }}. Run build-ca.yml first."
+      loop: "{{ cert_files.results }}"
+    - name: Get restricted root fingerprint
+      ansible.builtin.command:
+        argv: ["{{ openssl_bin }}", x509, -in, "{{ ca_cert }}", -noout, -fingerprint, -sha256]
+      register: root_fp
+      changed_when: false
+    - name: Normalize restricted root fingerprint
+      ansible.builtin.set_fact:
+        root_hash: "{{ root_fp.stdout | regex_replace('^.*=', '') | replace(':', '') | upper }}"
+    - name: Check exact restricted root fingerprint
+      ansible.builtin.shell: 'security find-certificate -a -Z "{{ keychain }}" | grep -qi "{{ root_hash }}"'
+      args:
+        executable: /bin/bash
+      register: root_present
+      failed_when: false
+      changed_when: false
+    - name: Install exact restricted root as trusted root
+      ansible.builtin.command:
+        argv: [security, add-trusted-cert, -d, -r, trustRoot, -k, "{{ keychain }}", "{{ ca_cert }}"]
+      when: root_present.rc != 0
+    - name: Get intermediate fingerprints
+      ansible.builtin.command:
+        argv: ["{{ openssl_bin }}", x509, -in, "{{ item }}", -noout, -fingerprint, -sha256]
+      loop: "{{ intermediates }}"
+      register: intermediate_fps
+      changed_when: false
+    - name: Check exact intermediate fingerprints
+      ansible.builtin.shell: |
+        HASH="{{ item.stdout | regex_replace('^.*=', '') | replace(':', '') | upper }}"
+        security find-certificate -a -Z "{{ keychain }}" | grep -qi "$HASH"
+      args:
+        executable: /bin/bash
+      loop: "{{ intermediate_fps.results }}"
+      register: intermediate_present
+      failed_when: false
+      changed_when: false
+    - name: Import missing intermediates without trust settings
+      ansible.builtin.command:
+        argv: [security, import, "{{ item.0.item }}", -k, "{{ keychain }}"]
+      loop: "{{ intermediate_fps.results | zip(intermediate_present.results) | list }}"
+      when: item.1.rc != 0
+    - name: Show same-CN restricted roots for review
+      ansible.builtin.command:
+        argv: [security, find-certificate, -a, -Z, -c, "Restricted Russian CA", "{{ keychain }}"]
+      register: same_cn
+      failed_when: false
+      changed_when: false
+    - name: Display installed restricted roots
+      ansible.builtin.debug:
+        var: same_cn.stdout_lines

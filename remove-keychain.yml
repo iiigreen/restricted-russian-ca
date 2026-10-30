@@ -1,0 +1,93 @@
+---
+- name: Remove current restricted Russian CA chain from macOS System Keychain
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  vars:
+    openssl_bin: /opt/homebrew/opt/openssl@3/bin/openssl
+    generated_dir: "{{ playbook_dir }}/generated"
+    keychain: /Library/Keychains/System.keychain
+    ca_cert: "{{ generated_dir }}/ca.crt"
+    intermediates:
+      - "{{ generated_dir }}/new_root_ca.crt"
+      - "{{ generated_dir }}/Russian_Trusted_Sub_CA.pem"
+      - "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+  tasks:
+    - name: Ensure this is macOS
+      ansible.builtin.assert:
+        that: ansible_facts.system == "Darwin"
+    - name: Check current generated certificate files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ [ca_cert] + intermediates }}"
+      register: cert_files
+    - name: Require files so deletion can be fingerprint-safe
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Missing {{ item.item }}; refusing unsafe CN-based deletion."
+      loop: "{{ cert_files.results }}"
+    - name: Get intermediate fingerprints
+      ansible.builtin.command:
+        argv: ["{{ openssl_bin }}", x509, -in, "{{ item }}", -noout, -fingerprint, -sha256]
+      loop: "{{ intermediates }}"
+      register: intermediate_fps
+      changed_when: false
+    - name: Delete only matching intermediates
+      ansible.builtin.shell: |
+        HASH="{{ item.stdout | regex_replace('^.*=', '') | replace(':', '') | upper }}"
+        if security find-certificate -a -Z "{{ keychain }}" | grep -qi "$HASH"; then
+          security delete-certificate -Z "$HASH" "{{ keychain }}"
+          echo REMOVED
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ intermediate_fps.results }}"
+      register: removed_intermediates
+      changed_when: "'REMOVED' in (removed_intermediates.stdout | default(''))"
+    - name: Get current restricted root fingerprint
+      ansible.builtin.command:
+        argv: ["{{ openssl_bin }}", x509, -in, "{{ ca_cert }}", -noout, -fingerprint, -sha256]
+      register: root_fp
+      changed_when: false
+    - name: Normalize current root fingerprint
+      ansible.builtin.set_fact:
+        root_hash: "{{ root_fp.stdout | regex_replace('^.*=', '') | replace(':', '') | upper }}"
+    - name: Check exact current root
+      ansible.builtin.shell: 'security find-certificate -a -Z "{{ keychain }}" | grep -qi "{{ root_hash }}"'
+      args:
+        executable: /bin/bash
+      register: root_present
+      failed_when: false
+      changed_when: false
+    - name: Remove trust settings for exact current root
+      ansible.builtin.command:
+        argv: [security, remove-trusted-cert, -d, "{{ ca_cert }}"]
+      when: root_present.rc == 0
+      register: remove_trust
+      failed_when: false
+      changed_when: remove_trust.rc == 0
+    - name: Delete only exact current root fingerprint
+      ansible.builtin.shell: |
+        if security find-certificate -a -Z "{{ keychain }}" | grep -qi "{{ root_hash }}"; then
+          security delete-certificate -Z "{{ root_hash }}" "{{ keychain }}"
+          echo REMOVED
+        fi
+      args:
+        executable: /bin/bash
+      register: removed_root
+      changed_when: "'REMOVED' in (removed_root.stdout | default(''))"
+    - name: Verify exact current root is absent
+      ansible.builtin.shell: '! security find-certificate -a -Z "{{ keychain }}" | grep -qi "{{ root_hash }}"'
+      args:
+        executable: /bin/bash
+      changed_when: false
+    - name: Report any other same-CN roots without deleting them
+      ansible.builtin.command:
+        argv: [security, find-certificate, -a, -Z, -c, "Restricted Russian CA", "{{ keychain }}"]
+      register: remaining_same_cn
+      failed_when: false
+      changed_when: false
+    - name: Display remaining same-CN roots
+      ansible.builtin.debug:
+        msg: "{{ remaining_same_cn.stdout_lines if remaining_same_cn.rc == 0 else ['No same-CN roots remain.'] }}"

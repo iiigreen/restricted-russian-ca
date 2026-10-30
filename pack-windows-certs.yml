@@ -1,0 +1,127 @@
+---
+- name: Pack Windows certificates and CMD scripts using zip
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    zip_bin: /usr/bin/zip
+    unzip_bin: /usr/bin/unzip
+    windows_dir: "{{ playbook_dir }}/windows"
+    archive_path: "{{ playbook_dir }}/Restricted-Russian-CA-Windows.zip"
+
+    cmd_files:
+      - Install-Certificates.cmd
+      - Remove-Certificates-All.cmd
+
+    source_files:
+      - "{{ windows_dir }}/Restricted-Russian-CA.cer"
+      - "{{ windows_dir }}/Russian-Trusted-Root-cross-signed.cer"
+      - "{{ windows_dir }}/Russian-Trusted-Sub-CA.cer"
+      - "{{ windows_dir }}/Russian-Trusted-Sub-CA-2024.cer"
+      - "{{ playbook_dir }}/Install-Certificates.cmd"
+      - "{{ playbook_dir }}/Remove-Certificates-All.cmd"
+
+  tasks:
+    - name: Check zip and unzip
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: true
+      loop:
+        - "{{ zip_bin }}"
+        - "{{ unzip_bin }}"
+      register: archive_tools
+
+    - name: Require zip and unzip
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg | default(false)
+          - item.stat.executable | default(false)
+        fail_msg: "Executable not found: {{ item.item }}"
+        quiet: true
+      loop: "{{ archive_tools.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check source certificates and CMD files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop: "{{ source_files }}"
+      register: source_checks
+
+    - name: Require all six source files
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg | default(false)
+          - (item.stat.size | default(0) | int) > 0
+        fail_msg: "Missing, empty or non-regular file: {{ item.item }}"
+        quiet: true
+      loop: "{{ source_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Copy CMD scripts into windows
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/{{ item }}"
+        dest: "{{ windows_dir }}/{{ item }}"
+        mode: "0644"
+      loop: "{{ cmd_files }}"
+
+    - name: Build and verify ZIP containing only six package files
+      ansible.builtin.shell: |
+        set -euo pipefail
+        unset ZIPOPT UNZIP UNZIPOPT ZIPINFO ZIPINFOOPT
+
+        archive={{ archive_path | quote }}
+
+        if [ -L "$archive" ] || { [ -e "$archive" ] && [ ! -f "$archive" ]; }; then
+          echo "Refusing to replace non-regular archive: $archive" >&2
+          exit 1
+        fi
+
+        tmp_dir=$(mktemp -d {{ (playbook_dir ~ '/.windows-zip.XXXXXX') | quote }})
+        trap 'rm -rf "$tmp_dir"' EXIT
+
+        # Always build a new archive, never update an old ZIP in place.
+        {{ zip_bin | quote }} -q -9 -X -MM -j "$tmp_dir/package.zip" \
+          windows/Restricted-Russian-CA.cer \
+          windows/Russian-Trusted-Root-cross-signed.cer \
+          windows/Russian-Trusted-Sub-CA.cer \
+          windows/Russian-Trusted-Sub-CA-2024.cer \
+          windows/Install-Certificates.cmd \
+          windows/Remove-Certificates-All.cmd
+
+        {{ unzip_bin | quote }} -tqq "$tmp_dir/package.zip"
+
+        if [ -f "$archive" ] && cmp -s "$tmp_dir/package.zip" "$archive"; then
+          echo "ARCHIVE_UNCHANGED"
+        else
+          chmod 0644 "$tmp_dir/package.zip"
+          mv -f "$tmp_dir/package.zip" "$archive"
+          echo "ARCHIVE_UPDATED"
+        fi
+      args:
+        chdir: "{{ playbook_dir }}"
+        executable: /bin/bash
+      environment:
+        COPYFILE_DISABLE: "1"
+        TZ: UTC
+      register: zip_result
+      when: not ansible_check_mode
+      changed_when: "'ARCHIVE_UPDATED' in (zip_result.stdout | default(''))"
+
+    - name: Show archive path
+      ansible.builtin.debug:
+        msg: "Archive: {{ archive_path }}"
+      when: not ansible_check_mode
+
+    - name: Explain check mode
+      ansible.builtin.debug:
+        msg: >-
+          Source files checked. CMD copy changes are previewed.
+          ZIP creation is skipped in check mode.
+      when: ansible_check_mode

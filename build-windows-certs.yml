@@ -1,0 +1,97 @@
+---
+- name: Prepare certificates for Windows
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    openssl_bin: /opt/homebrew/opt/openssl@3/bin/openssl
+    generated_dir: "{{ playbook_dir }}/generated"
+    windows_dir: "{{ playbook_dir }}/windows"
+
+    certificates:
+      - src: "{{ generated_dir }}/ca.crt"
+        dst: "{{ windows_dir }}/Restricted-Russian-CA.cer"
+
+      - src: "{{ generated_dir }}/new_root_ca.crt"
+        dst: "{{ windows_dir }}/Russian-Trusted-Root-cross-signed.cer"
+
+      - src: "{{ generated_dir }}/Russian_Trusted_Sub_CA.pem"
+        dst: "{{ windows_dir }}/Russian-Trusted-Sub-CA.cer"
+
+      - src: "{{ generated_dir }}/Russian_Trusted_Sub_CA_2024.pem"
+        dst: "{{ windows_dir }}/Russian-Trusted-Sub-CA-2024.cer"
+
+  tasks:
+
+    - name: Check OpenSSL
+      ansible.builtin.stat:
+        path: "{{ openssl_bin }}"
+      register: openssl_stat
+
+    - name: Require OpenSSL
+      ansible.builtin.assert:
+        that:
+          - openssl_stat.stat.exists
+        fail_msg: "OpenSSL not found: {{ openssl_bin }}"
+
+    - name: Check source certificates
+      ansible.builtin.stat:
+        path: "{{ item.src }}"
+      loop: "{{ certificates }}"
+      register: source_certs
+
+    - name: Require all source certificates
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Missing source certificate: {{ item.item.src }}"
+      loop: "{{ source_certs.results }}"
+
+    - name: Create Windows certificate directory
+      ansible.builtin.file:
+        path: "{{ windows_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Convert certificates to DER for Windows
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - x509
+          - -in
+          - "{{ item.src }}"
+          - -outform
+          - DER
+          - -out
+          - "{{ item.dst }}"
+      loop: "{{ certificates }}"
+      register: conversion
+      changed_when: true
+
+    - name: Verify generated DER certificates
+      ansible.builtin.command:
+        argv:
+          - "{{ openssl_bin }}"
+          - x509
+          - -inform
+          - DER
+          - -in
+          - "{{ item.dst }}"
+          - -noout
+          - -subject
+          - -issuer
+          - -fingerprint
+          - -sha256
+      loop: "{{ certificates }}"
+      register: verification
+      changed_when: false
+
+    - name: Show generated certificate information
+      ansible.builtin.debug:
+        msg: |
+          {{ item.item.dst }}
+          {{ item.stdout }}
+      loop: "{{ verification.results }}"
+      loop_control:
+        label: "{{ item.item.dst }}"
